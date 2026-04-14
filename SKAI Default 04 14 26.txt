@@ -49755,7 +49755,7 @@ document.addEventListener('DOMContentLoaded', function () {
       out.push(n);
     };
 
-    var fromLists = [window.__SKAI_LAST_EXTRA__, window.SKAI_LAST_EXTRA__, window.skaiSaveExtraOrdered];
+    var fromLists = [window.__SKAI_LAST_EXTRA__, window.SKAI_LAST_EXTRA, window.skaiSaveExtraOrdered];
     for (i = 0; i < fromLists.length && out.length < limit; i++) {
       var list = _skaiNormalizeInts(fromLists[i] || []);
       var li;
