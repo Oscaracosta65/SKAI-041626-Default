@@ -9226,18 +9226,42 @@ $labelInput = implode(' - ', $parts);
             );
             goto SKAI_SAVE_DONE;
         }
-        if (!$isSkaiPool && $hasExtraCfg && $extraMax > 0) {
-            // For non-SKAI saves with extras: allow 0, 1, or 2 depending on config; do not exceed 2 for now
-            if (count($extraArr) > 2) {
-                skai_debug_log('[SKAI SAVE BLOCKED] reason=too_many_extra_balls count=' . count($extraArr));
+        if (!$isSkaiPool && !$isDailyGamePosted && $hasExtraCfg && $extraMax > 0) {
+            // For standard non-SKAI saves with extras: use configured extra count, safe fallback if missing.
+            $allowedExtraCount = 0;
+            if (!empty($__extraCfgKnown) && isset($__saveLotCfgRow) && is_array($__saveLotCfgRow)) {
+                $allowedExtraCount = (int) (
+                    $__saveLotCfgRow['num_extra_balls_drawn']
+                    ?? $__saveLotCfgRow['extra_ball_count']
+                    ?? $__saveLotCfgRow['extraCount']
+                    ?? $__saveLotCfgRow['numExtraBallsDrawn']
+                    ?? 0
+                );
+            }
+            if ($allowedExtraCount <= 0) {
+                $allowedExtraCount = (int) (
+                    $lotteryConfig['lotteryConfig']['num_extra_balls_drawn']
+                    ?? $lotteryConfig['lotteryConfig']['extra_ball_count']
+                    ?? $lotteryConfig['lotteryConfig']['extraCount']
+                    ?? $lotteryConfig['num_extra_balls_drawn']
+                    ?? $lotteryConfig['extra_ball_count']
+                    ?? $lotteryConfig['extraCount']
+                    ?? 0
+                );
+            }
+            if ($allowedExtraCount <= 0) {
+                $allowedExtraCount = 2;
+            }
+            if (count($extraArr) > $allowedExtraCount) {
+                skai_debug_log('[SKAI SAVE BLOCKED] reason=too_many_extra_balls count=' . count($extraArr) . ' allowed=' . (int)$allowedExtraCount);
                 if ($skaiBatchSaveMode) {
                     $skaiRespondBatchJson(false, [
                         'reason'      => 'too_many_extra_balls',
-                        'message'     => 'We couldn\'t save: too many extra balls (max 2).',
+                        'message'     => 'We couldn\'t save: too many extra balls (max ' . (int)$allowedExtraCount . ').',
                         'batch_index' => $skaiBatchSaveIndex, 'batch_total' => $skaiBatchSaveTotal, 'batch_label' => $skaiBatchSaveLabel,
                     ]);
                 }
-                $app->enqueueMessage('We couldn\'t save: too many extra balls (max 2).', 'error');
+                $app->enqueueMessage('We couldn\'t save: too many extra balls (max ' . (int)$allowedExtraCount . ').', 'error');
                 goto SKAI_SAVE_DONE;
             }
         } else {
@@ -17695,13 +17719,23 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
       <?php
         $defaultPickSize = (int) ($lotteryConfig['lotteryConfig']['pickSize'] ?? $lotteryConfig['pickSize'] ?? 5);
         $hasExtraLocal   = !empty($hasExtra);
+        $defaultExtraPickCount = (int) (
+          $lotteryConfig['lotteryConfig']['num_extra_balls_drawn']
+          ?? $lotteryConfig['lotteryConfig']['extra_ball_count']
+          ?? $lotteryConfig['lotteryConfig']['extraCount']
+          ?? $lotteryConfig['num_extra_balls_drawn']
+          ?? $lotteryConfig['extra_ball_count']
+          ?? $lotteryConfig['extraCount']
+          ?? 2
+        );
+        if ($defaultExtraPickCount <= 0) { $defaultExtraPickCount = 2; }
       ?>
       <div class="skai-save-controls">
         <label class="skai-label" for="skai-pick-main">How many main numbers?</label>
         <input id="skai-pick-main" class="skai-input" type="number" min="1" max="20" value="<?php echo (int)$defaultPickSize; ?>" />
         <?php if ($hasExtraLocal): ?>
           <label class="skai-label" for="skai-pick-extra">How many extra balls?</label>
-          <input id="skai-pick-extra" class="skai-input" type="number" min="0" max="2" value="1" />
+          <input id="skai-pick-extra" class="skai-input" type="number" min="0" max="<?php echo (int)$defaultExtraPickCount; ?>" value="1" />
         <?php endif; ?>
       </div>
 
@@ -41233,6 +41267,31 @@ try {
                         try { _pFpsFlds[_pfl].value = window.__SKAI_FPS_JSON__; } catch(_){}
                       }
                     } catch(_){}
+                    try {
+                      var _extraCsvSync = _patchExtras.join(',');
+                      var _extraSyncForms = document.querySelectorAll('form');
+                      for (var _esf = 0; _esf < _extraSyncForms.length; _esf++) {
+                        var _syncForm = _extraSyncForms[_esf];
+                        if (!_syncForm || !_syncForm.querySelector('input[name="save_set"]')) { continue; }
+                        var _syncExtraJson = _syncForm.querySelector('input[name="extra_ball_numbers"]');
+                        var _syncExtraCsv = _syncForm.querySelector('input[name="extra_ball_numbers_csv"]') || _syncForm.querySelector('input[name="extra_numbers_csv"]');
+                        var _syncNumbers = _syncForm.querySelector('input[name="numbers_json"]');
+                        if (_syncExtraJson) {
+                          try { _syncExtraJson.value = JSON.stringify(_patchExtras.slice()); } catch(_){}
+                        }
+                        if (_syncExtraCsv) {
+                          _syncExtraCsv.value = _extraCsvSync;
+                        }
+                        if (_syncNumbers && _syncNumbers.value) {
+                          try {
+                            var _syncParsed = JSON.parse(_syncNumbers.value);
+                            if (!_syncParsed || typeof _syncParsed !== 'object') { _syncParsed = {}; }
+                            _syncParsed.extra_numbers = _patchExtras.slice();
+                            _syncNumbers.value = JSON.stringify(_syncParsed);
+                          } catch(_){}
+                        }
+                      }
+                    } catch(_){}
                   }
                 } catch(_) {}
               }
@@ -49670,6 +49729,192 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   };
 
+  function _skaiNormalizeInts(arr) {
+    var out = [];
+    var i;
+    for (i = 0; i < (arr || []).length; i++) {
+      var n = parseInt(arr[i], 10);
+      if (isFinite(n)) { out.push(n); }
+    }
+    return out;
+  }
+
+  function _skaiIsStandardExtraLottery() {
+    var meta = window.SKAI_META || {};
+    return !!(meta && meta.isStandardLotteryGame && meta.hasExtraBall && !meta.isDaily && !meta.isDailyDigitGame);
+  }
+
+  function _skaiCollectLiveExtraNumbers(limit) {
+    var out = [];
+    var i;
+    var pushUnique = function (n) {
+      var j;
+      for (j = 0; j < out.length; j++) {
+        if (out[j] === n) { return; }
+      }
+      out.push(n);
+    };
+
+    var fromLists = [window.__SKAI_LAST_EXTRA__, window.SKAI_LAST_EXTRA__, window.skaiSaveExtraOrdered];
+    for (i = 0; i < fromLists.length && out.length < limit; i++) {
+      var list = _skaiNormalizeInts(fromLists[i] || []);
+      var li;
+      for (li = 0; li < list.length && out.length < limit; li++) {
+        pushUnique(list[li]);
+      }
+    }
+
+    if (out.length < limit && Array.isArray(window.SKAI_TOP_EXTRA)) {
+      for (i = 0; i < window.SKAI_TOP_EXTRA.length && out.length < limit; i++) {
+        var row = window.SKAI_TOP_EXTRA[i] || {};
+        var rn = parseInt(row.num, 10);
+        if (isFinite(rn)) { pushUnique(rn); }
+      }
+    }
+
+    if (out.length < limit) {
+      var host = document.getElementById('aiExtraPredictionContainer');
+      var balls = host ? host.querySelectorAll('.xball') : [];
+      for (i = 0; i < balls.length && out.length < limit; i++) {
+        var bn = parseInt(String(balls[i].textContent || '').replace(/[^0-9\-]/g, ''), 10);
+        if (isFinite(bn)) { pushUnique(bn); }
+      }
+    }
+
+    return out.slice(0, Math.max(0, limit));
+  }
+
+  function _skaiPayloadHasExtras(jsonStr) {
+    if (!jsonStr) { return false; }
+    try {
+      var obj = JSON.parse(jsonStr);
+      if (!obj || typeof obj !== 'object') { return false; }
+      if (Array.isArray(obj.extra_numbers) && obj.extra_numbers.length) { return true; }
+      var i;
+      var fps = Array.isArray(obj.final_prediction_sets) ? obj.final_prediction_sets : [];
+      for (i = 0; i < fps.length; i++) {
+        if (fps[i] && Array.isArray(fps[i].extra) && fps[i].extra.length) { return true; }
+      }
+      var top5 = Array.isArray(obj.top_5_prediction_sets) ? obj.top_5_prediction_sets : [];
+      for (i = 0; i < top5.length; i++) {
+        if (top5[i] && Array.isArray(top5[i].extra) && top5[i].extra.length) { return true; }
+      }
+      if (obj.primary_prediction_set && Array.isArray(obj.primary_prediction_set.extra) && obj.primary_prediction_set.extra.length) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function _skaiSyncStandardExtraFields(form, extraArr) {
+    if (!form || !_skaiIsStandardExtraLottery()) { return false; }
+    var extras = _skaiNormalizeInts(extraArr || []);
+    if (!extras.length) { return false; }
+
+    try {
+      var extraJsonFld = form.querySelector('input[name="extra_ball_numbers"]');
+      var extraCsvFld = form.querySelector('input[name="extra_ball_numbers_csv"]') || form.querySelector('input[name="extra_numbers_csv"]');
+      if (extraJsonFld) { extraJsonFld.value = JSON.stringify(extras.slice()); }
+      if (extraCsvFld) { extraCsvFld.value = extras.join(','); }
+
+      var numbersFld = form.querySelector('input[name="numbers_json"]');
+      if (numbersFld) {
+        var nj = {};
+        try { nj = numbersFld.value ? JSON.parse(numbersFld.value) : {}; } catch (_) { nj = {}; }
+        if (!nj || typeof nj !== 'object') { nj = {}; }
+        nj.extra_numbers = extras.slice();
+        numbersFld.value = JSON.stringify(nj);
+      }
+
+      if (Array.isArray(window.SKAI_FINAL_PREDICTION_SETS)) {
+        var sf;
+        for (sf = 0; sf < window.SKAI_FINAL_PREDICTION_SETS.length; sf++) {
+          if (window.SKAI_FINAL_PREDICTION_SETS[sf]) {
+            window.SKAI_FINAL_PREDICTION_SETS[sf].extra = extras.slice();
+          }
+        }
+      }
+
+      var topFld = form.querySelector('input[name="top_combos_json"]');
+      var topRaw = (topFld && topFld.value) ? topFld.value : (window.__SKAI_FPS_JSON__ || '');
+      if (topRaw) {
+        try {
+          var topObj = JSON.parse(topRaw);
+          if (topObj && typeof topObj === 'object') {
+            var i;
+            var fps = Array.isArray(topObj.final_prediction_sets) ? topObj.final_prediction_sets : [];
+            for (i = 0; i < fps.length; i++) {
+              if (fps[i]) { fps[i].extra = extras.slice(); }
+            }
+            var top5 = Array.isArray(topObj.top_5_prediction_sets) ? topObj.top_5_prediction_sets : [];
+            for (i = 0; i < top5.length; i++) {
+              if (top5[i]) { top5[i].extra = extras.slice(); }
+            }
+            if (topObj.primary_prediction_set) {
+              topObj.primary_prediction_set.extra = extras.slice();
+            }
+            topObj.extra_numbers = extras.slice();
+            topRaw = JSON.stringify(topObj);
+            window.__SKAI_FPS_JSON__ = topRaw;
+            var allTop = document.querySelectorAll('input[name="top_combos_json"]');
+            for (i = 0; i < allTop.length; i++) {
+              allTop[i].value = topRaw;
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    return true;
+  }
+
+  function _skaiStandardExtraReadyState(form) {
+    var meta = window.SKAI_META || {};
+    var gate = _skaiIsStandardExtraLottery();
+    if (!gate) {
+      return { gate: false, ready: true, extras: [] };
+    }
+
+    var extraLimit = parseInt(meta.extraCount || meta.extra_ball_count || meta.num_extra_balls_drawn || 5, 10) || 5;
+    if (extraLimit <= 0) { extraLimit = 5; }
+
+    var host = document.getElementById('aiExtraPredictionContainer');
+    var markerReady = true;
+    if (host) {
+      var markerAttrs = ['data-ai-ready', 'data-skai-extra-ready', 'data-ready'];
+      var mi;
+      for (mi = 0; mi < markerAttrs.length; mi++) {
+        if (host.hasAttribute(markerAttrs[mi])) {
+          var mv = String(host.getAttribute(markerAttrs[mi]) || '').toLowerCase();
+          markerReady = (mv === '1' || mv === 'true' || mv === 'yes' || mv === 'done' || mv === 'ready');
+          break;
+        }
+      }
+    }
+
+    var finalSourceReady = false;
+    if ((window.__SKAI_LAST_EXTRA__ && window.__SKAI_LAST_EXTRA__.length) ||
+        (window.SKAI_LAST_EXTRA && window.SKAI_LAST_EXTRA.length) ||
+        (window.skaiSaveExtraOrdered && window.skaiSaveExtraOrdered.length) ||
+        (window.SKAI_TOP_EXTRA && window.SKAI_TOP_EXTRA.length)) {
+      finalSourceReady = true;
+    }
+
+    var extras = _skaiCollectLiveExtraNumbers(extraLimit);
+    if (extras.length) {
+      _skaiSyncStandardExtraFields(form, extras);
+    }
+
+    var topFld = form ? form.querySelector('input[name="top_combos_json"]') : null;
+    var payloadReady = _skaiPayloadHasExtras((topFld && topFld.value) ? topFld.value : (window.__SKAI_FPS_JSON__ || ''));
+
+    return {
+      gate: true,
+      ready: !!(markerReady && finalSourceReady && extras.length > 0 && payloadReady),
+      extras: extras
+    };
+  }
+
   function interceptSaveForm(form) {
     if (!form || form.__skaiSaveIntercepted) { return; }
     form.__skaiSaveIntercepted = true;
@@ -49684,125 +49929,155 @@ document.addEventListener('DOMContentLoaded', function () {
       var hint = form.querySelector("[id$=save-hint], [id$=-save-hint]");
       if (hint) { hint.textContent = "Saving..."; }
 
-      // [FIX-INTERCEPT-POPULATE] Proactively populate prediction fields from SKAI globals.
-      // The document-level bubble-phase submit handler (Block B / skaiPrepareAiSave) NEVER
-      // fires because stopPropagation() above prevents the event from reaching the document
-      // in the bubble phase.  Without this call, numbers_json / main_numbers /
-      // daily_top_combos_json are always empty in the POST body and PHP returns
-      // {"ok":false,"reason":"empty_main_numbers"} for every save.
-      if (typeof window._skaiPopulateFormFields === 'function') {
-        try { window._skaiPopulateFormFields(form); } catch (_ppErr) {}
-      }
+      var gateMaxAttempts = 18;
+      var gateDelayMs = 150;
+      var gateAttempt = 0;
 
-      var data = [];
-      var inputs = form.elements;
-      for (var i = 0; i < inputs.length; i++) {
-        var el = inputs[i];
-        if (!el.name) { continue; }
-        var tag = el.tagName.toUpperCase();
-        if (tag === "INPUT") {
-          if (el.type === "checkbox" || el.type === "radio") {
-            if (!el.checked) { continue; }
+      var sendSaveRequest = function() {
+        // [FIX-INTERCEPT-POPULATE] Proactively populate prediction fields from SKAI globals.
+        // The document-level bubble-phase submit handler (Block B / skaiPrepareAiSave) NEVER
+        // fires because stopPropagation() above prevents the event from reaching the document
+        // in the bubble phase.  Without this call, numbers_json / main_numbers /
+        // daily_top_combos_json are always empty in the POST body and PHP returns
+        // {"ok":false,"reason":"empty_main_numbers"} for every save.
+        if (typeof window._skaiPopulateFormFields === 'function') {
+          try { window._skaiPopulateFormFields(form); } catch (_ppErr) {}
+        }
+
+        var liveExtras = _skaiCollectLiveExtraNumbers(5);
+        if (liveExtras.length) {
+          _skaiSyncStandardExtraFields(form, liveExtras);
+        }
+
+        var data = [];
+        var inputs = form.elements;
+        for (var i = 0; i < inputs.length; i++) {
+          var el = inputs[i];
+          if (!el.name) { continue; }
+          var tag = el.tagName.toUpperCase();
+          if (tag === "INPUT") {
+            if (el.type === "checkbox" || el.type === "radio") {
+              if (!el.checked) { continue; }
+            }
+            data.push(encodeURIComponent(el.name) + "=" + encodeURIComponent(el.value || ""));
+          } else if (tag === "TEXTAREA" || tag === "SELECT") {
+            data.push(encodeURIComponent(el.name) + "=" + encodeURIComponent(el.value || ""));
           }
-          data.push(encodeURIComponent(el.name) + "=" + encodeURIComponent(el.value || ""));
-        } else if (tag === "TEXTAREA" || tag === "SELECT") {
-          data.push(encodeURIComponent(el.name) + "=" + encodeURIComponent(el.value || ""));
         }
-      }
-      var body = data.join("&");
-      var url = form.getAttribute("action") || (window.location.href.split("#")[0]);
+        var body = data.join("&");
+        var url = form.getAttribute("action") || (window.location.href.split("#")[0]);
 
-      var xhr = new XMLHttpRequest();
-      xhr.open("POST", url, true);
-      xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
-      xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
-      xhr.onreadystatechange = function () {
-        if (xhr.readyState !== 4) { return; }
-        if (submitBtn) { submitBtn.disabled = false; }
+        var xhr = new XMLHttpRequest();
+        xhr.open("POST", url, true);
+        xhr.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
+        xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+        xhr.onreadystatechange = function () {
+          if (xhr.readyState !== 4) { return; }
+          if (submitBtn) { submitBtn.disabled = false; }
 
-        var batchModeField = form.querySelector('input[name="batch_save_mode"]');
-        var batchIndexField = form.querySelector('input[name="batch_save_index"]');
-        var batchTotalField = form.querySelector('input[name="batch_save_total"]');
-        var batchLabelField = form.querySelector('input[name="batch_save_label"]');
-        var detail = {
-          ok: false,
-          http_status: xhr.status,
-          batch_save_mode: !!(batchModeField && String(batchModeField.value) === '1'),
-          batch_index: batchIndexField ? parseInt(batchIndexField.value || '0', 10) : 0,
-          batch_total: batchTotalField ? parseInt(batchTotalField.value || '0', 10) : 0,
-          batch_label: batchLabelField ? String(batchLabelField.value || '') : ''
+          var batchModeField = form.querySelector('input[name="batch_save_mode"]');
+          var batchIndexField = form.querySelector('input[name="batch_save_index"]');
+          var batchTotalField = form.querySelector('input[name="batch_save_total"]');
+          var batchLabelField = form.querySelector('input[name="batch_save_label"]');
+          var detail = {
+            ok: false,
+            http_status: xhr.status,
+            batch_save_mode: !!(batchModeField && String(batchModeField.value) === '1'),
+            batch_index: batchIndexField ? parseInt(batchIndexField.value || '0', 10) : 0,
+            batch_total: batchTotalField ? parseInt(batchTotalField.value || '0', 10) : 0,
+            batch_label: batchLabelField ? String(batchLabelField.value || '') : ''
+          };
+
+          try {
+            console.log('[SKAI SAVE] BACKEND RESPONSE RECEIVED: http_status=' + xhr.status
+              + ' batch_mode=' + detail.batch_save_mode
+              + ' batch_index=' + detail.batch_index
+              + ' resp_len=' + String(xhr.responseText || '').length);
+          } catch(_) {}
+
+          var ok = (xhr.status >= 200 && xhr.status < 400);
+          var resp = ok ? String(xhr.responseText || '') : '';
+          var parsed = null;
+          if (resp) {
+            try { parsed = JSON.parse(resp); } catch (_) { parsed = null; }
+          }
+          if (parsed && typeof parsed === 'object') {
+            if (typeof parsed.ok !== 'undefined') { detail.ok = !!parsed.ok; }
+            if (typeof parsed.reason !== 'undefined') { detail.reason = String(parsed.reason || ''); }
+            if (typeof parsed.message !== 'undefined') { detail.message = String(parsed.message || ''); }
+            if (typeof parsed.error !== 'undefined') { detail.error = String(parsed.error || ''); }
+            if (typeof parsed.batch_index !== 'undefined') { detail.batch_index = parseInt(parsed.batch_index || '0', 10) || detail.batch_index; }
+            if (typeof parsed.batch_total !== 'undefined') { detail.batch_total = parseInt(parsed.batch_total || '0', 10) || detail.batch_total; }
+            if (typeof parsed.batch_label !== 'undefined') { detail.batch_label = String(parsed.batch_label || detail.batch_label || ''); }
+            if (typeof parsed.row_id !== 'undefined') { detail.row_id = parseInt(parsed.row_id || '0', 10) || 0; }
+          }
+
+          var looksError = (
+            !ok ||
+            resp.indexOf("couldn") >= 0 ||
+            resp.indexOf("couldn’t") >= 0 ||
+            resp.indexOf("alert-error") >= 0 ||
+            resp.indexOf("alert-warning") >= 0 ||
+            resp.indexOf("Please run SKAI") >= 0 ||
+            resp.indexOf("No main numbers") >= 0 ||
+            resp.indexOf("Save failed") >= 0
+          );
+          var looksOk = ok && !looksError && (
+            resp.indexOf("saved") >= 0 ||
+            resp.indexOf("Saved") >= 0 ||
+            resp.indexOf("dashboard") >= 0 ||
+            resp.indexOf("success") >= 0
+          );
+          if (!parsed || typeof parsed.ok === 'undefined') {
+            detail.ok = looksOk;
+            if (!detail.ok && looksError && !detail.reason) { detail.reason = 'response_error'; }
+          }
+
+          if (detail.ok) {
+            showSaveToast("Saved ✓");
+            showInlineSaveStatus(form);
+            if (hint) { hint.textContent = "Saved successfully."; }
+          } else {
+            var failText = String(detail.message || detail.reason || detail.error || 'Save failed');
+            showSaveToast('Save failed: ' + failText);
+            if (hint) { hint.textContent = 'Save failed: ' + failText; }
+          }
+          emitSkaiSaveStatus(detail);
         };
-
-        try {
-          console.log('[SKAI SAVE] BACKEND RESPONSE RECEIVED: http_status=' + xhr.status
-            + ' batch_mode=' + detail.batch_save_mode
-            + ' batch_index=' + detail.batch_index
-            + ' resp_len=' + String(xhr.responseText || '').length);
-        } catch(_) {}
-
-        var ok = (xhr.status >= 200 && xhr.status < 400);
-        var resp = ok ? String(xhr.responseText || '') : '';
-        var parsed = null;
-        if (resp) {
-          try { parsed = JSON.parse(resp); } catch (_) { parsed = null; }
+        try { xhr.send(body); } catch (e) {
+          if (submitBtn) { submitBtn.disabled = false; }
+          showSaveToast('Save failed: request_exception');
+          if (hint) { hint.textContent = 'Save failed: request_exception'; }
+          emitSkaiSaveStatus({
+            ok: false,
+            reason: 'request_exception',
+            message: (e && e.message) ? String(e.message) : 'request_exception',
+            batch_save_mode: !!(form.querySelector('input[name="batch_save_mode"]') && String(form.querySelector('input[name="batch_save_mode"]').value) === '1'),
+            batch_index: form.querySelector('input[name="batch_save_index"]') ? parseInt(form.querySelector('input[name="batch_save_index"]').value || '0', 10) : 0,
+            batch_total: form.querySelector('input[name="batch_save_total"]') ? parseInt(form.querySelector('input[name="batch_save_total"]').value || '0', 10) : 0,
+            batch_label: form.querySelector('input[name="batch_save_label"]') ? String(form.querySelector('input[name="batch_save_label"]').value || '') : ''
+          });
         }
-        if (parsed && typeof parsed === 'object') {
-          if (typeof parsed.ok !== 'undefined') { detail.ok = !!parsed.ok; }
-          if (typeof parsed.reason !== 'undefined') { detail.reason = String(parsed.reason || ''); }
-          if (typeof parsed.message !== 'undefined') { detail.message = String(parsed.message || ''); }
-          if (typeof parsed.error !== 'undefined') { detail.error = String(parsed.error || ''); }
-          if (typeof parsed.batch_index !== 'undefined') { detail.batch_index = parseInt(parsed.batch_index || '0', 10) || detail.batch_index; }
-          if (typeof parsed.batch_total !== 'undefined') { detail.batch_total = parseInt(parsed.batch_total || '0', 10) || detail.batch_total; }
-          if (typeof parsed.batch_label !== 'undefined') { detail.batch_label = String(parsed.batch_label || detail.batch_label || ''); }
-          if (typeof parsed.row_id !== 'undefined') { detail.row_id = parseInt(parsed.row_id || '0', 10) || 0; }
-        }
-
-        var looksError = (
-          !ok ||
-          resp.indexOf("couldn") >= 0 ||
-          resp.indexOf("couldn’t") >= 0 ||
-          resp.indexOf("alert-error") >= 0 ||
-          resp.indexOf("alert-warning") >= 0 ||
-          resp.indexOf("Please run SKAI") >= 0 ||
-          resp.indexOf("No main numbers") >= 0 ||
-          resp.indexOf("Save failed") >= 0
-        );
-        var looksOk = ok && !looksError && (
-          resp.indexOf("saved") >= 0 ||
-          resp.indexOf("Saved") >= 0 ||
-          resp.indexOf("dashboard") >= 0 ||
-          resp.indexOf("success") >= 0
-        );
-        if (!parsed || typeof parsed.ok === 'undefined') {
-          detail.ok = looksOk;
-          if (!detail.ok && looksError && !detail.reason) { detail.reason = 'response_error'; }
-        }
-
-        if (detail.ok) {
-          showSaveToast("Saved ✓");
-          showInlineSaveStatus(form);
-          if (hint) { hint.textContent = "Saved successfully."; }
-        } else {
-          var failText = String(detail.message || detail.reason || detail.error || 'Save failed');
-          showSaveToast('Save failed: ' + failText);
-          if (hint) { hint.textContent = 'Save failed: ' + failText; }
-        }
-        emitSkaiSaveStatus(detail);
       };
-      try { xhr.send(body); } catch (e) {
+
+      var waitAndSend = function() {
+        var gateState = _skaiStandardExtraReadyState(form);
+        if (!gateState.gate || gateState.ready) {
+          sendSaveRequest();
+          return;
+        }
+        gateAttempt++;
+        if (gateAttempt <= gateMaxAttempts) {
+          setTimeout(waitAndSend, gateDelayMs);
+          return;
+        }
         if (submitBtn) { submitBtn.disabled = false; }
-        showSaveToast('Save failed: request_exception');
-        if (hint) { hint.textContent = 'Save failed: request_exception'; }
-        emitSkaiSaveStatus({
-          ok: false,
-          reason: 'request_exception',
-          message: (e && e.message) ? String(e.message) : 'request_exception',
-          batch_save_mode: !!(form.querySelector('input[name="batch_save_mode"]') && String(form.querySelector('input[name="batch_save_mode"]').value) === '1'),
-          batch_index: form.querySelector('input[name="batch_save_index"]') ? parseInt(form.querySelector('input[name="batch_save_index"]').value || '0', 10) : 0,
-          batch_total: form.querySelector('input[name="batch_save_total"]') ? parseInt(form.querySelector('input[name="batch_save_total"]').value || '0', 10) : 0,
-          batch_label: form.querySelector('input[name="batch_save_label"]') ? String(form.querySelector('input[name="batch_save_label"]').value || '') : ''
-        });
-      }
+        showSaveToast('Save failed: extras_not_ready');
+        if (hint) { hint.textContent = 'Save failed: extras_not_ready'; }
+        emitSkaiSaveStatus({ ok: false, reason: 'extras_not_ready' });
+      };
+
+      waitAndSend();
     }, true);
   }
 
