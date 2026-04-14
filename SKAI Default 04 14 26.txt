@@ -9261,7 +9261,7 @@ $labelInput = implode(' - ', $parts);
                         'batch_index' => $skaiBatchSaveIndex, 'batch_total' => $skaiBatchSaveTotal, 'batch_label' => $skaiBatchSaveLabel,
                     ]);
                 }
-                $app->enqueueMessage('We couldn\'t save: too many extra balls (max ' . (int)$allowedExtraCount . ').', 'error');
+                if (!$skaiIsXhrSaveRequest) { $app->enqueueMessage('We couldn\'t save: too many extra balls (max ' . (int)$allowedExtraCount . ').', 'error'); }
                 goto SKAI_SAVE_DONE;
             }
         } else {
@@ -9288,7 +9288,7 @@ $labelInput = implode(' - ', $parts);
                     'batch_index' => $skaiBatchSaveIndex, 'batch_total' => $skaiBatchSaveTotal, 'batch_label' => $skaiBatchSaveLabel,
                 ]);
             }
-            $app->enqueueMessage('You need to be signed in to save picks.', 'error');
+            if (!$skaiIsXhrSaveRequest) { $app->enqueueMessage('You need to be signed in to save picks.', 'error'); }
             goto SKAI_SAVE_DONE;
         }
 
@@ -9347,10 +9347,10 @@ $labelInput = implode(' - ', $parts);
                     'batch_index' => $skaiBatchSaveIndex, 'batch_total' => $skaiBatchSaveTotal, 'batch_label' => $skaiBatchSaveLabel,
                 ]);
             }
-            $app->enqueueMessage('We couldn\'t resolve the lottery id for this page. Save aborted.', 'error');
+            if (!$skaiIsXhrSaveRequest) { $app->enqueueMessage('We couldn\'t resolve the lottery id for this page. Save aborted.', 'error'); }
             goto SKAI_SAVE_DONE;
         }
-        // [FIX] Try main_numbers_csv fallback before blocking so saves using CSV-only
+        // [FIX] Try main_numbers_csv fallbackbefore blocking so saves using CSV-only
         // payloads (e.g. when numbers_json has empty arrays) are not rejected prematurely.
         if (empty($mainArr)) {
             $tmpMainCsv = preg_replace('/[^0-9,]/', '', trim((string)$in->getString('main_numbers_csv', '')));
@@ -9378,7 +9378,7 @@ $labelInput = implode(' - ', $parts);
                     'batch_index' => $skaiBatchSaveIndex, 'batch_total' => $skaiBatchSaveTotal, 'batch_label' => $skaiBatchSaveLabel,
                 ]);
             }
-            $app->enqueueMessage('No main numbers to save. Please build your set first.', 'error');
+            if (!$skaiIsXhrSaveRequest) { $app->enqueueMessage('No main numbers to save. Please build your set first.', 'error'); }
             goto SKAI_SAVE_DONE;
         }
         skai_debug_log('[SKAI SAVE TRACE] phase=normalized_payload lottery_id=' . (int)$lotteryId . ' main_count=' . count($mainArr) . ' extra_count=' . count($extraArr) . ' main_csv_len=' . strlen($mainCsv) . ' extra_csv_len=' . strlen($extraCsv));
@@ -10297,10 +10297,12 @@ $row = (object) [
                     'batch_label' => $skaiBatchSaveLabel
                 ]);
             }
-            if (!empty($isDebug)) {
-                $app->enqueueMessage('Save failed (rolled back). Please try again.', 'error');
-            } else {
-                $app->enqueueMessage('We couldn\'t save your set right now. Please try again.', 'error');
+            if (!$skaiIsXhrSaveRequest) {
+                if (!empty($isDebug)) {
+                    $app->enqueueMessage('Save failed (rolled back). Please try again.', 'error');
+                } else {
+                    $app->enqueueMessage('We couldn\'t save your set right now. Please try again.', 'error');
+                }
             }
             goto SKAI_SAVE_DONE;
         }
@@ -10464,7 +10466,9 @@ $row = (object) [
         ], JSON_UNESCAPED_SLASHES) ?: '{"ok":false,"reason":"save_fatal_early"}';
         exit(0);
     }
-    if (!empty($isDebug)) {
+    if (!empty($skaiIsXhrSaveRequest)) {
+        // XHR saves: client already received a JSON error response; don't pollute the PHP session.
+    } elseif (!empty($isDebug)) {
         $app->enqueueMessage('Save failed. Please try again.', 'error');
     } else {
         $app->enqueueMessage('We couldn\'t save your set right now. Please try again.', 'error');
@@ -10786,10 +10790,8 @@ if (array_key_exists('has_extra_ball', $lotteryConfig)) {
 
 if ($__flagWantsExtra && !$__hasExtraCols) {
     // Fail-safe: configuration claims extra ball, but no columns configured.
-    if (!empty($isDebug)) {
-        error_log('[SKAI] Extra-ball requested but no columns configured for game_id=' . $gameId);
-    }
-$app->enqueueMessage('Bonus ball is enabled for this game, but its data isn\'t configured yet. We\'ll continue without it for now.', 'warning');
+    // Log to error_log in all environments (not just debug) so the admin is aware.
+    error_log('[SKAI] Extra-ball requested but no columns configured for game_id=' . $gameId);
 }
 
 $hasExtra = ($__flagWantsExtra && $__hasExtraCols);
@@ -49547,7 +49549,7 @@ document.addEventListener('DOMContentLoaded', function () {
       try {
         var _sdIsDaily = !!(window.SKAI_META && (window.SKAI_META.isDaily || window.SKAI_META.isDailyDigitGame)
           && !window.SKAI_META.isStandardLotteryGame);
-        var _sdExtraLimit = _sdIsDaily ? 3 : ((window.SKAI_TOP_EXTRA && window.SKAI_TOP_EXTRA.length) ? Math.min(5, window.SKAI_TOP_EXTRA.length) : 5);
+        var _sdExtraLimit = _sdIsDaily ? 3 : ((window.SKAI_TOP_EXTRA && window.SKAI_TOP_EXTRA.length > 0) ? Math.min(5, window.SKAI_TOP_EXTRA.length) : 5);
         var _sdMainArr = [];
         if (_sdIsDaily && window.SKAI_DAILY_CHOSEN_COMBOS && window.SKAI_DAILY_CHOSEN_COMBOS.length) {
           for (var _sdci = 0; _sdci < window.SKAI_DAILY_CHOSEN_COMBOS.length && _sdMainArr.length < 5; _sdci++) {
@@ -51467,7 +51469,6 @@ document.addEventListener('DOMContentLoaded', function () {
         setCurrentLabel('Save failed at run ' + (idx + 1) + '.');
         setBatchSaveBtnsDisabled(false);
         if (window.skaiShowSaveToast) { window.skaiShowSaveToast('Save failed at run ' + (idx + 1) + '.'); }
-        alert('SKAI batch save failed on run ' + (idx + 1) + ' (' + (((r.combo && r.combo.label) || ('Run ' + (idx + 1)))) + ').\n\nReason: ' + _msg + '\n\nCheck the browser console for details.');
         if (doneCallback) { doneCallback({ ok: false, failedIndex: idx, detail: _detail }); }
       }
     };
